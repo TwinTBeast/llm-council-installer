@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>LLM Council Plus Installer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #0f1117;
+      color: #e0e0e0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 36px 40px;
+    }
+    h1 { font-size: 22px; margin-bottom: 4px; color: #fff; }
+    p.sub { font-size: 12px; color: #666; margin-bottom: 24px; }
+    .screen { width: 100%; display: none; flex-direction: column; align-items: center; }
+    .screen.active { display: flex; }
+
+    .prereq-list { width: 100%; margin-bottom: 20px; }
+    .prereq-row {
+      display: flex; align-items: center;
+      background: #1e2130; border-radius: 10px;
+      padding: 12px 16px; margin-bottom: 10px; gap: 12px;
+    }
+    .prereq-icon { font-size: 20px; width: 28px; text-align: center; }
+    .prereq-info { flex: 1; }
+    .prereq-name { font-size: 14px; font-weight: 600; color: #fff; }
+    .prereq-status { font-size: 11px; color: #666; margin-top: 2px; }
+    .prereq-status.ok { color: #4ade80; }
+    .prereq-status.fail { color: #f87171; }
+    .prereq-status.warn { color: #facc15; }
+    .prereq-status.checking { color: #94a3b8; }
+    .prereq-badge { font-size: 18px; width: 28px; text-align: center; }
+
+    .action-btn {
+      padding: 6px 14px; border: none;
+      border-radius: 6px; color: #fff;
+      font-size: 12px; cursor: pointer; white-space: nowrap;
+    }
+    .action-btn.install { background: #6366f1; }
+    .action-btn.update  { background: #d97706; }
+    .action-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .action-btn:hover:not(:disabled) { opacity: 0.85; }
+
+    #check-btn, #proceed-btn {
+      width: 100%; padding: 13px; border: none;
+      border-radius: 10px; font-size: 15px;
+      font-weight: 600; cursor: pointer; color: #fff;
+    }
+    #check-btn { background: linear-gradient(135deg, #6366f1, #8b5cf6); margin-bottom: 10px; }
+    #check-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    #proceed-btn { background: linear-gradient(135deg, #059669, #10b981); display: none; }
+    #proceed-btn:hover { opacity: 0.9; }
+
+    .row { display: flex; width: 100%; gap: 10px; margin-bottom: 20px; }
+    input {
+      flex: 1; padding: 10px 14px;
+      background: #1e2130; border: 1px solid #333;
+      border-radius: 8px; color: #fff; font-size: 13px;
+    }
+    .browse-btn {
+      padding: 10px 18px; background: #2a2d3e;
+      border: 1px solid #444; border-radius: 8px;
+      color: #ccc; cursor: pointer; font-size: 13px;
+    }
+    .browse-btn:hover { background: #3a3d4e; }
+    #install-btn {
+      width: 100%; padding: 13px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border: none; border-radius: 10px;
+      color: #fff; font-size: 15px; font-weight: 600;
+      cursor: pointer; margin-bottom: 16px;
+    }
+    #install-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .progress-label {
+      width: 100%; display: flex;
+      justify-content: space-between;
+      font-size: 12px; color: #888; margin-bottom: 6px;
+    }
+    .progress-bar-bg {
+      width: 100%; background: #1e2130;
+      border-radius: 10px; height: 12px;
+      margin-bottom: 14px; overflow: hidden;
+    }
+    .progress-bar-fill {
+      height: 100%; width: 0%;
+      background: linear-gradient(90deg, #6366f1, #8b5cf6);
+      border-radius: 10px; transition: width 0.4s ease;
+    }
+    #log {
+      width: 100%; background: #1e2130;
+      border-radius: 10px; padding: 14px;
+      font-size: 12px; color: #aaa;
+      height: 140px; overflow-y: auto;
+      line-height: 1.9; margin-bottom: 14px;
+    }
+    #log .ok  { color: #4ade80; }
+    #log .err { color: #f87171; }
+    #log .info { color: #94a3b8; }
+    #success-box {
+      display: none; width: 100%;
+      background: #0d2818; border: 1px solid #4ade80;
+      border-radius: 10px; padding: 14px 20px;
+      text-align: center; margin-bottom: 14px;
+    }
+    #success-box .icon { font-size: 26px; margin-bottom: 4px; }
+    #success-box h2 { color: #4ade80; font-size: 15px; margin-bottom: 3px; }
+    #success-box p { color: #86efac; font-size: 12px; }
+    #launch-btn {
+      display: none; width: 100%; padding: 13px;
+      background: linear-gradient(135deg, #059669, #10b981);
+      border: none; border-radius: 10px;
+      color: #fff; font-size: 15px; font-weight: 600; cursor: pointer;
+    }
+    #launch-btn:hover { opacity: 0.9; }
+  </style>
+</head>
+<body>
+
+  <h1>🧠 LLM Council Plus</h1>
+  <p class="sub">Installer — sets up everything automatically on your machine</p>
+
+  <!-- ══ SCREEN 1: PREREQUISITES ══ -->
+  <div class="screen active" id="screen-prereq">
+    <div class="prereq-list">
+
+      <div class="prereq-row" id="row-git">
+        <div class="prereq-icon">🔧</div>
+        <div class="prereq-info">
+          <div class="prereq-name">Git</div>
+          <div class="prereq-status" id="status-git">Not checked yet</div>
+        </div>
+        <div class="prereq-badge" id="badge-git">⬜</div>
+        <button class="action-btn install" id="fix-git"    style="display:none" onclick="installPrereq('git')">Install</button>
+        <button class="action-btn update"  id="update-git" style="display:none" onclick="updatePrereq('git')">Update</button>
+      </div>
+
+      <div class="prereq-row" id="row-node">
+        <div class="prereq-icon">🟩</div>
+        <div class="prereq-info">
+          <div class="prereq-name">Node.js</div>
+          <div class="prereq-status" id="status-node">Not checked yet</div>
+        </div>
+        <div class="prereq-badge" id="badge-node">⬜</div>
+        <button class="action-btn install" id="fix-node"    style="display:none" onclick="installPrereq('node')">Install</button>
+        <button class="action-btn update"  id="update-node" style="display:none" onclick="updatePrereq('node')">Update</button>
+      </div>
+
+      <div class="prereq-row" id="row-python">
+        <div class="prereq-icon">🐍</div>
+        <div class="prereq-info">
+          <div class="prereq-name">Python 3.10+</div>
+          <div class="prereq-status" id="status-python">Not checked yet</div>
+        </div>
+        <div class="prereq-badge" id="badge-python">⬜</div>
+        <button class="action-btn install" id="fix-python"    style="display:none" onclick="installPrereq('python')">Install</button>
+        <button class="action-btn update"  id="update-python" style="display:none" onclick="updatePrereq('python')">Update</button>
+      </div>
+
+      <div class="prereq-row" id="row-uv">
+        <div class="prereq-icon">⚡</div>
+        <div class="prereq-info">
+          <div class="prereq-name">uv (Python package manager)</div>
+          <div class="prereq-status" id="status-uv">Not checked yet</div>
+        </div>
+        <div class="prereq-badge" id="badge-uv">⬜</div>
+        <button class="action-btn install" id="fix-uv"    style="display:none" onclick="installPrereq('uv')">Install</button>
+        <button class="action-btn update"  id="update-uv" style="display:none" onclick="updatePrereq('uv')">Update</button>
+      </div>
+
+    </div>
+
+    <button id="check-btn" onclick="checkAll()">🔍 Check Prerequisites</button>
+    <button id="proceed-btn" onclick="goToInstall()">▶ Proceed to Installation</button>
+  </div>
+
+  <!-- ══ SCREEN 2: INSTALL ══ -->
+  <div class="screen" id="screen-install">
+    <div class="row">
+      <input type="text" id="install-dir" value="C:\LLMCouncil" placeholder="Installation folder" />
+      <button class="browse-btn" onclick="browse()">Browse</button>
+    </div>
+
+    <button id="install-btn" onclick="startInstall()">⚡ Install Now</button>
+
+    <div class="progress-label">
+      <span id="current-step">Ready to install</span>
+      <span id="pct-label">0%</span>
+    </div>
+    <div class="progress-bar-bg">
+      <div class="progress-bar-fill" id="progress-fill"></div>
+    </div>
+
+    <div id="log"><span class="info">Waiting to start...</span></div>
+
+    <div id="success-box">
+      <div class="icon">🎉</div>
+      <h2>Installation Successful!</h2>
+      <p>LLM Council Plus is ready. A desktop shortcut has been created for you.</p>
+    </div>
+
+    <button id="launch-btn" onclick="launchApp()">🚀 Launch LLM Council Plus</button>
+  </div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+    const prereqs = ['git', 'node', 'python', 'uv'];
+    let prereqStatus = { git: false, node: false, python: false, uv: false };
+
+    function setStatus(name, cls, badge, msg) {
+      document.getElementById('status-' + name).className = 'prereq-status ' + cls;
+      document.getElementById('status-' + name).textContent = msg;
+      document.getElementById('badge-' + name).textContent = badge;
+    }
+
+    function resetButtons(name) {
+      document.getElementById('fix-' + name).style.display = 'none';
+      document.getElementById('update-' + name).style.display = 'none';
+    }
+
+    function checkAllOk() {
+      const allOk = Object.values(prereqStatus).every(v => v);
+      document.getElementById('proceed-btn').style.display = allOk ? 'block' : 'none';
+    }
+
+    async function checkAll() {
+      document.getElementById('check-btn').disabled = true;
+      document.getElementById('proceed-btn').style.display = 'none';
+
+      for (const name of prereqs) {
+        resetButtons(name);
+        setStatus(name, 'checking', '🔄', 'Checking...');
+        const result = await ipcRenderer.invoke('check-prereq', name);
+
+        if (!result.found) {
+          setStatus(name, 'fail', '❌', `Not found — required v${result.required}+`);
+          prereqStatus[name] = false;
+          document.getElementById('fix-' + name).style.display = 'inline-block';
+        } else if (!result.ok) {
+          setStatus(name, 'warn', '⚠️', `v${result.version} found — v${result.required}+ required`);
+          prereqStatus[name] = false;
+          document.getElementById('update-' + name).style.display = 'inline-block';
+        } else {
+          setStatus(name, 'ok', '✅', `v${result.version} — OK`);
+          prereqStatus[name] = true;
+        }
+      }
+
+      document.getElementById('check-btn').disabled = false;
+      checkAllOk();
+    }
+
+    async function installPrereq(name) {
+      const btn = document.getElementById('fix-' + name);
+      btn.disabled = true;
+      btn.textContent = 'Installing...';
+      setStatus(name, 'checking', '🔄', 'Installing, please wait...');
+      const result = await ipcRenderer.invoke('install-prereq', name);
+      await recheck(name, btn, 'Install');
+    }
+
+    async function updatePrereq(name) {
+      const btn = document.getElementById('update-' + name);
+      btn.disabled = true;
+      btn.textContent = 'Updating...';
+      setStatus(name, 'checking', '🔄', 'Updating, please wait...');
+      const result = await ipcRenderer.invoke('update-prereq', name);
+      await recheck(name, btn, 'Update');
+    }
+
+    async function recheck(name, btn, label) {
+      const check = await ipcRenderer.invoke('check-prereq', name);
+      if (check.ok) {
+        setStatus(name, 'ok', '✅', `v${check.version} — OK`);
+        prereqStatus[name] = true;
+        resetButtons(name);
+      } else if (check.found) {
+        setStatus(name, 'warn', '⚠️', `Still v${check.version} — restart installer if just updated`);
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+      } else {
+        setStatus(name, 'fail', '❌', `Not detected — try restarting installer`);
+        btn.disabled = false;
+        btn.textContent = 'Retry';
+      }
+      checkAllOk();
+    }
+
+    function goToInstall() {
+      document.getElementById('screen-prereq').classList.remove('active');
+      document.getElementById('screen-install').classList.add('active');
+    }
+
+    function browse() {
+      const input = document.getElementById('install-dir');
+      const { execSync } = require('child_process');
+      try {
+        const result = execSync('powershell -Command "Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.ShowDialog() | Out-Null; $f.SelectedPath"').toString().trim();
+        if (result) input.value = result;
+      } catch(e) {}
+    }
+
+    function log(msg, type='info') {
+      const div = document.getElementById('log');
+      const span = document.createElement('span');
+      span.className = type;
+      span.textContent = '› ' + msg;
+      div.appendChild(span);
+      div.appendChild(document.createElement('br'));
+      div.scrollTop = div.scrollHeight;
+    }
+
+    function startInstall() {
+      const installDir = document.getElementById('install-dir').value.trim();
+      if (!installDir) { alert('Please choose an installation folder.'); return; }
+      document.getElementById('install-btn').disabled = true;
+      document.getElementById('log').innerHTML = '';
+      document.getElementById('success-box').style.display = 'none';
+      document.getElementById('launch-btn').style.display = 'none';
+      ipcRenderer.send('start-install', { installDir });
+    }
+
+    function launchApp() {
+      const installDir = document.getElementById('install-dir').value.trim();
+      const path = require('path');
+      const launcherPath = path.join(installDir, 'llm-council-plus', 'launch.bat');
+      const { exec } = require('child_process');
+      exec(`start "" "${launcherPath}"`);
+    }
+
+    ipcRenderer.on('progress', (e, { msg, pct }) => {
+      document.getElementById('progress-fill').style.width = pct + '%';
+      document.getElementById('pct-label').textContent = pct + '%';
+      document.getElementById('current-step').textContent = msg;
+      const type = msg.includes('✅') ? 'ok' : msg.includes('❌') ? 'err' : 'info';
+      log(msg, type);
+    });
+
+    ipcRenderer.on('done', () => {
+      document.getElementById('progress-fill').style.width = '100%';
+      document.getElementById('pct-label').textContent = '100%';
+      document.getElementById('current-step').textContent = 'Installation complete!';
+      document.getElementById('success-box').style.display = 'block';
+      document.getElementById('launch-btn').style.display = 'block';
+    });
+
+    ipcRenderer.on('error', (e, msg) => {
+      log('❌ Error: ' + msg, 'err');
+      document.getElementById('current-step').textContent = 'Installation failed';
+      document.getElementById('install-btn').disabled = false;
+    });
+  </script>
+</body>
+</html>
