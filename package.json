@@ -23,6 +23,15 @@
       "main.js",
       "index.html",
       "icon.ico"
+    ],
+    "asarUnpack": [
+      "icon.ico"
+    ],
+    "extraResources": [
+      {
+        "from": "icon.ico",
+        "to": "../icon.ico"
+      }
     ]
   },
   "devDependencies": {
