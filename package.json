@@ -17,7 +17,7 @@
     },
     "mac": {
       "target": "dmg",
-      "icon": "icon.ico"
+      "icon": "icon.png"
     },
     "nsis": {
       "oneClick": true,
@@ -27,15 +27,21 @@
     "files": [
       "main.js",
       "index.html",
-      "icon.ico"
+      "icon.ico",
+      "icon.png"
     ],
     "asarUnpack": [
-      "icon.ico"
+      "icon.ico",
+      "icon.png"
     ],
     "extraResources": [
       {
         "from": "icon.ico",
         "to": "../icon.ico"
+      },
+      {
+        "from": "icon.png",
+        "to": "../icon.png"
       }
     ]
   },
