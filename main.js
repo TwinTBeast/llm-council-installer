@@ -243,9 +243,9 @@ ipcMain.handle('install-prereq', async (e, name) => {
         try { fs.unlinkSync(scriptPath); } catch (_) {}
 
         // Write install commands to a script file — avoids all AppleScript escaping issues
+        // Do NOT set NONINTERACTIVE=1 — brew needs interactive mode to prompt for sudo password
         const scriptContent = [
           '#!/bin/bash',
-          'export NONINTERACTIVE=1',
           'export HOMEBREW_INSTALL_IGNORE_INSUFFICIENT_PERMISSIONS=1',
           '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
           'BREW_EXIT=$?',
@@ -266,8 +266,8 @@ ipcMain.handle('install-prereq', async (e, name) => {
         const appleScript = `osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "bash ${scriptPath}"'`;
 
         e.sender.send(logCh, 'Opening Terminal to install Homebrew...');
-        e.sender.send(logCh, 'Enter your Mac password in the Terminal window if prompted.');
-        e.sender.send(logCh, 'Auto-detecting when Homebrew is ready...');
+        e.sender.send(logCh, '👉 Switch to the Terminal window and enter your Mac password when prompted.');
+        e.sender.send(logCh, 'The installer will continue automatically once done...');
 
         await run(appleScript);
 
