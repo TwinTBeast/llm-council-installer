@@ -233,52 +233,57 @@ ipcMain.handle('install-prereq', async (e, name) => {
     } else {
       const brew = findBrewPath() || 'brew';
       if (name === 'homebrew') {
-        // Homebrew needs a real TTY and cannot run via sudo -S or as root.
-        // Solution: use AppleScript to open a visible Terminal window that runs the installer.
-        // The user sees the Terminal, may need to enter password once there, then we auto-detect completion.
-
-        const doneFlag = path.join(os.tmpdir(), 'brew_install_done.flag');
-        const errFlag  = path.join(os.tmpdir(), 'brew_install_err.flag');
+        const doneFlag   = path.join(os.tmpdir(), 'brew_install_done.flag');
+        const errFlag    = path.join(os.tmpdir(), 'brew_install_err.flag');
+        const scriptPath = path.join(os.tmpdir(), 'brew_install.sh');
 
         // Clean up old flags
-        try { fs.unlinkSync(doneFlag); } catch (_) {}
-        try { fs.unlinkSync(errFlag);  } catch (_) {}
+        try { fs.unlinkSync(doneFlag);   } catch (_) {}
+        try { fs.unlinkSync(errFlag);    } catch (_) {}
+        try { fs.unlinkSync(scriptPath); } catch (_) {}
 
-        // Build the shell command that runs in Terminal
-        // It writes a flag file when done so we can detect completion
-        const brewInstallCmd = [
-          `export NONINTERACTIVE=1`,
-          `export HOMEBREW_INSTALL_IGNORE_INSUFFICIENT_PERMISSIONS=1`,
-          `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`,
-          `if [ $? -eq 0 ]; then touch "${doneFlag}"; else touch "${errFlag}"; fi`,
-          // Add brew to zprofile
-          `if [ -f /usr/local/bin/brew ]; then echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.zprofile; fi`,
-          `if [ -f /opt/homebrew/bin/brew ]; then echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile; fi`,
-          `echo "==> Homebrew installation complete. You can close this window."`,
-        ].join(' && ');
+        // Write install commands to a script file — avoids all AppleScript escaping issues
+        const scriptContent = [
+          '#!/bin/bash',
+          'export NONINTERACTIVE=1',
+          'export HOMEBREW_INSTALL_IGNORE_INSUFFICIENT_PERMISSIONS=1',
+          '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+          'BREW_EXIT=$?',
+          `if [ $BREW_EXIT -eq 0 ]; then`,
+          `  [ -f /usr/local/bin/brew ] && echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.zprofile`,
+          `  [ -f /opt/homebrew/bin/brew ] && echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile`,
+          `  touch "${doneFlag}"`,
+          `  echo "==> Done! You can close this window."`,
+          `else`,
+          `  touch "${errFlag}"`,
+          `  echo "==> Installation FAILED (exit $BREW_EXIT)."`,
+          `fi`,
+        ].join('\n');
 
-        // Open Terminal via AppleScript with the install command
-        const appleScript = `osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "${brewInstallCmd.replace(/"/g, '\\"').replace(/'/g, "'\\''")}"'`;
+        fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+
+        // Open Terminal and run the script file — no escaping issues
+        const appleScript = `osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "bash ${scriptPath}"'`;
 
         e.sender.send(logCh, 'Opening Terminal to install Homebrew...');
-        e.sender.send(logCh, 'A Terminal window will open — you may need to enter your password once.');
-        e.sender.send(logCh, 'The installer will auto-detect when Homebrew is ready...');
+        e.sender.send(logCh, 'Enter your Mac password in the Terminal window if prompted.');
+        e.sender.send(logCh, 'Auto-detecting when Homebrew is ready...');
 
         await run(appleScript);
 
-        // Poll every 3 seconds until done flag appears or brew is found (max 5 min)
+        // Poll every 3 seconds until done flag or brew binary found (max 5 min)
         const maxWait = 300000;
-        const interval = 3000;
-        let elapsed = 0;
+        const pollMs  = 3000;
+        let elapsed   = 0;
         await new Promise((resolve, reject) => {
-          const poll = setInterval(async () => {
-            elapsed += interval;
+          const poll = setInterval(() => {
+            elapsed += pollMs;
             if (fs.existsSync(errFlag)) {
               clearInterval(poll);
-              reject('Homebrew installation failed in Terminal.');
+              reject('Homebrew installation failed — check the Terminal window for details.');
             } else if (fs.existsSync(doneFlag) || findBrewPath()) {
               clearInterval(poll);
-              e.sender.send(logCh, '✅ Homebrew detected — continuing...');
+              e.sender.send(logCh, '✅ Homebrew detected — continuing automatically...');
               resolve();
             } else if (elapsed >= maxWait) {
               clearInterval(poll);
@@ -286,21 +291,12 @@ ipcMain.handle('install-prereq', async (e, name) => {
             } else {
               e.sender.send(logCh, `⏳ Waiting for Homebrew... (${Math.round(elapsed/1000)}s)`);
             }
-          }, interval);
+          }, pollMs);
         });
 
-        // Refresh PATH after brew install
         await refreshPath();
-        const newBrew = findBrewPath();
-        if (newBrew) {
-          try { await run(`"${newBrew}" shellenv`); } catch (_) {}
-        }
       }
-      // For brew installs — pre-authorize sudo then run brew as normal user
-      // brew handles its own privilege escalation internally
-      if (name === 'git' || name === 'node' || name === 'python') {
-        try { await run(`echo "${sudoPassword}" | sudo -S -v`); } catch (_) {}
-      }
+      // brew install/update — run as normal user (brew handles its own sudo internally)
       if (name === 'git')    await runStreaming(`"${brew}" install git`, e, logCh);
       if (name === 'node')   await runStreaming(`"${brew}" install node@18 && "${brew}" link node@18 --force --overwrite`, e, logCh);
       if (name === 'python') await runStreaming(`"${brew}" install python@3.10`, e, logCh);
