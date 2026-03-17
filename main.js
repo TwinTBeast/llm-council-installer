@@ -271,8 +271,8 @@ ipcMain.handle('install-prereq', async (e, name) => {
 
         await run(appleScript);
 
-        // Poll every 3 seconds until done flag or brew binary found (max 5 min)
-        const maxWait = 300000;
+        // Poll every 3 seconds until done flag or brew binary found (max 10 min)
+        const maxWait = 600000;
         const pollMs  = 3000;
         let elapsed   = 0;
         await new Promise((resolve, reject) => {
@@ -287,12 +287,38 @@ ipcMain.handle('install-prereq', async (e, name) => {
               resolve();
             } else if (elapsed >= maxWait) {
               clearInterval(poll);
-              reject('Homebrew installation timed out after 5 minutes.');
+              reject('Homebrew installation timed out after 10 minutes.');
             } else {
               e.sender.send(logCh, `⏳ Waiting for Homebrew... (${Math.round(elapsed/1000)}s)`);
             }
           }, pollMs);
         });
+
+        // Auto-run the PATH setup commands Homebrew recommends
+        // This adds brew to ~/.zprofile and activates it in the current process
+        e.sender.send(logCh, 'Setting up Homebrew PATH...');
+        const brewPaths = ['/usr/local/bin/brew', '/opt/homebrew/bin/brew'];
+        for (const b of brewPaths) {
+          if (fs.existsSync(b)) {
+            try {
+              // Add to ~/.zprofile (persists across Terminal sessions)
+              const zprofile = path.join(os.homedir(), '.zprofile');
+              const evalLine = `eval "$(${b} shellenv zsh)"`;
+              const existing = fs.existsSync(zprofile) ? fs.readFileSync(zprofile, 'utf8') : '';
+              if (!existing.includes(evalLine)) {
+                fs.appendFileSync(zprofile, `\n${evalLine}\n`);
+              }
+              // Activate in current Electron process immediately
+              const brewEnv = await run(`"${b}" shellenv`);
+              brewEnv.split('\n').forEach(line => {
+                const m = line.match(/^export\s+(\w+)="?([^"]*)"?/);
+                if (m) process.env[m[1]] = m[2];
+              });
+              e.sender.send(logCh, '✅ Homebrew PATH configured successfully.');
+            } catch (_) {}
+            break;
+          }
+        }
 
         await refreshPath();
       }
