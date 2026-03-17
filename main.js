@@ -88,6 +88,10 @@ async function refreshPath() {
       '/usr/local/bin',
       '/opt/homebrew/bin',
       '/opt/homebrew/sbin',
+      '/opt/homebrew/opt/node@18/bin',
+      '/opt/homebrew/opt/python@3.10/bin',
+      '/usr/local/opt/node@18/bin',
+      '/usr/local/opt/python@3.10/bin',
       '/usr/bin',
       '/bin',
       path.join(os.homedir(), '.local', 'bin'),
@@ -172,11 +176,52 @@ ipcMain.handle('check-prereq', async (e, name) => {
   try {
     let version = '';
     switch (name) {
-      case 'git':    version = (await run('git --version')).split(' ')[2]; break;
-      case 'node':   version = (await run('node --version')).replace('v',''); break;
+      case 'git':
+        version = (await run('git --version')).split(' ')[2];
+        break;
+      case 'node':
+        if (isMac) {
+          // Try PATH first, then brew-specific locations
+          try { version = (await run('node --version')).replace('v',''); }
+          catch {
+            for (const p of [
+              '/opt/homebrew/opt/node@18/bin/node',
+              '/opt/homebrew/bin/node',
+              '/usr/local/opt/node@18/bin/node',
+              '/usr/local/bin/node',
+            ]) {
+              if (fs.existsSync(p)) { version = (await run(`"${p}" --version`)).replace('v',''); break; }
+            }
+          }
+        } else {
+          version = (await run('node --version')).replace('v','');
+        }
+        break;
       case 'python':
-        try { version = (await run('python3 --version')).replace('Python ',''); }
-        catch { version = (await run('python --version')).replace('Python ',''); }
+        if (isMac) {
+          // Try python3.10 specifically first (brew installs it as python3.10)
+          // then fall back to python3/python
+          try { version = (await run('python3.10 --version')).replace('Python ',''); }
+          catch {
+            try {
+              // Check brew-installed python3.10 by absolute path
+              for (const p of [
+                '/opt/homebrew/opt/python@3.10/bin/python3.10',
+                '/opt/homebrew/bin/python3.10',
+                '/usr/local/opt/python@3.10/bin/python3.10',
+                '/usr/local/bin/python3.10',
+              ]) {
+                if (fs.existsSync(p)) { version = (await run(`"${p}" --version`)).replace('Python ',''); break; }
+              }
+            } catch {}
+            if (!version) {
+              try { version = (await run('python3 --version')).replace('Python ',''); } catch {}
+            }
+          }
+        } else {
+          try { version = (await run('python3 --version')).replace('Python ',''); }
+          catch { version = (await run('python --version')).replace('Python ',''); }
+        }
         break;
       case 'uv': {
         let uvCmd = 'uv';
@@ -186,6 +231,7 @@ ipcMain.handle('check-prereq', async (e, name) => {
         break;
       }
     }
+    if (!version) throw new Error('version empty');
     const ok = versionOk(version, MIN_VERSIONS[name]);
     return { found: true, ok, version, required: MIN_VERSIONS[name] };
   } catch { return { found: false, ok: false, version: null, required: MIN_VERSIONS[name] }; }
