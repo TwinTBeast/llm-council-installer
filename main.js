@@ -83,11 +83,31 @@ async function refreshPath() {
       path.join(os.homedir(), 'AppData', 'Roaming', 'uv', 'bin'),
     ]) { if (!process.env.PATH.includes(dir)) process.env.PATH = dir + ';' + process.env.PATH; }
   } else {
+    // Always prepend known Mac locations — covers both Intel and Apple Silicon
     for (const dir of [
-      '/usr/local/bin', '/opt/homebrew/bin', '/opt/homebrew/sbin',
+      '/usr/local/bin',
+      '/opt/homebrew/bin',
+      '/opt/homebrew/sbin',
+      '/usr/bin',
+      '/bin',
       path.join(os.homedir(), '.local', 'bin'),
       path.join(os.homedir(), '.cargo', 'bin'),
     ]) { if (!process.env.PATH.includes(dir)) process.env.PATH = dir + ':' + process.env.PATH; }
+
+    // Also source brew shellenv if brew exists — sets HOMEBREW_PREFIX etc.
+    try {
+      const brewPath = fs.existsSync('/opt/homebrew/bin/brew')
+        ? '/opt/homebrew/bin/brew'
+        : '/usr/local/bin/brew';
+      if (fs.existsSync(brewPath)) {
+        const brewEnv = await run(`"${brewPath}" shellenv`);
+        // Parse export statements and apply to process.env
+        brewEnv.split('\n').forEach(line => {
+          const m = line.match(/^export\s+(\w+)="?([^"]*)"?/);
+          if (m) process.env[m[1]] = m[2];
+        });
+      }
+    } catch (_) {}
   }
 }
 
@@ -107,10 +127,27 @@ async function findUvPath() {
 }
 
 async function ensureHomebrew(event) {
-  try { await run('which brew'); return; } catch (_) {}
+  // Check both Apple Silicon (/opt/homebrew) and Intel (/usr/local) locations
+  const brewLocations = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
+  for (const b of brewLocations) {
+    if (fs.existsSync(b)) {
+      // Make sure it's on PATH
+      const brewDir = path.dirname(b);
+      if (!process.env.PATH.includes(brewDir))
+        process.env.PATH = brewDir + ':' + process.env.PATH;
+      return b;  // return the brew path for callers
+    }
+  }
+  // Not found — install it
   event.sender.send('prereq-log', 'Homebrew not found — installing...');
-  await runStreaming('/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"', event, 'prereq-log');
+  await runStreaming(
+    '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
+    event, 'prereq-log'
+  );
   await refreshPath();
+  // Return whichever path now exists
+  for (const b of brewLocations) if (fs.existsSync(b)) return b;
+  return 'brew';
 }
 
 function versionOk(current, required) {
@@ -123,7 +160,12 @@ function versionOk(current, required) {
   return true;
 }
 
-const MIN_VERSIONS = { git: '2.40', node: '18.0', python: '3.10', uv: '0.5' };
+const MIN_VERSIONS = {
+  git:    isMac ? '2.30' : '2.40',  // Mac ships 2.39 via Xcode — perfectly usable
+  node:   '18.0',
+  python: '3.10',
+  uv:     '0.5'
+};
 
 ipcMain.handle('check-prereq', async (e, name) => {
   await refreshPath();
@@ -157,9 +199,9 @@ ipcMain.handle('install-prereq', async (e, name) => {
       if (name === 'python') await runStreaming('winget install --id Python.Python.3.10 -e --source winget --accept-package-agreements --accept-source-agreements', e, 'prereq-log');
       if (name === 'uv')     await runStreamingPowerShell('irm https://astral.sh/uv/install.ps1 | iex', e, 'prereq-log');
     } else {
-      if (name === 'git')    { await ensureHomebrew(e); await runStreaming('brew install git', e, 'prereq-log'); }
-      if (name === 'node')   { await ensureHomebrew(e); await runStreaming('brew install node@18 && brew link node@18 --force --overwrite', e, 'prereq-log'); }
-      if (name === 'python') { await ensureHomebrew(e); await runStreaming('brew install python@3.10', e, 'prereq-log'); }
+      if (name === 'git')    { const b = await ensureHomebrew(e); await runStreaming(`"${b}" install git`, e, 'prereq-log'); }
+      if (name === 'node')   { const b = await ensureHomebrew(e); await runStreaming(`"${b}" install node@18 && "${b}" link node@18 --force --overwrite`, e, 'prereq-log'); }
+      if (name === 'python') { const b = await ensureHomebrew(e); await runStreaming(`"${b}" install python@3.10`, e, 'prereq-log'); }
       if (name === 'uv')     await runStreaming('curl -LsSf https://astral.sh/uv/install.sh | sh', e, 'prereq-log');
     }
     await refreshPath();
@@ -179,9 +221,9 @@ ipcMain.handle('update-prereq', async (e, name) => {
         await runStreaming(`${uvCmd} self update`, e, 'prereq-log');
       }
     } else {
-      if (name === 'git')    await runStreaming('brew upgrade git', e, 'prereq-log');
-      if (name === 'node')   await runStreaming('brew upgrade node@18', e, 'prereq-log');
-      if (name === 'python') await runStreaming('brew upgrade python@3.10', e, 'prereq-log');
+      if (name === 'git')    { const b = await ensureHomebrew(e); await runStreaming(`"${b}" upgrade git`, e, 'prereq-log'); }
+      if (name === 'node')   { const b = await ensureHomebrew(e); await runStreaming(`"${b}" upgrade node@18`, e, 'prereq-log'); }
+      if (name === 'python') { const b = await ensureHomebrew(e); await runStreaming(`"${b}" upgrade python@3.10`, e, 'prereq-log'); }
       if (name === 'uv')     await runStreaming('uv self update', e, 'prereq-log');
     }
     await refreshPath();
