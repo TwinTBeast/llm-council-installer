@@ -347,8 +347,9 @@
     );
     ipcRenderer.removeListener(channel, unsub);
 
-    // Short wait then re-check
-    await new Promise(r => setTimeout(r, 2000));
+    // Short wait then re-check (longer for homebrew since PATH needs to settle)
+    const waitMs = step.id === 'homebrew' ? 4000 : 2000;
+    await new Promise(r => setTimeout(r, waitMs));
     const check = await ipcRenderer.invoke('check-prereq', step.id);
 
     if (check.found && check.ok) {

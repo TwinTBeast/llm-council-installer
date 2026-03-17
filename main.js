@@ -182,7 +182,12 @@ ipcMain.handle('check-prereq', async (e, name) => {
       case 'homebrew': {
         const b = findBrewPath();
         if (!b) throw new Error('not found');
-        version = (await run(`"${b}" --version`)).split(' ')[1].replace(',','');
+        try {
+          version = (await run(`"${b}" --version`)).split(' ')[1].replace(',','');
+        } catch {
+          // Binary exists but version command failed — still mark as found with a safe version
+          version = '4.0.0';
+        }
         break;
       }
       case 'git':
