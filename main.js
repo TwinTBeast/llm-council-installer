@@ -248,6 +248,7 @@ ipcMain.handle('install-prereq', async (e, name) => {
         // It writes a flag file when done so we can detect completion
         const brewInstallCmd = [
           `export NONINTERACTIVE=1`,
+          `export HOMEBREW_INSTALL_IGNORE_INSUFFICIENT_PERMISSIONS=1`,
           `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`,
           `if [ $? -eq 0 ]; then touch "${doneFlag}"; else touch "${errFlag}"; fi`,
           // Add brew to zprofile
