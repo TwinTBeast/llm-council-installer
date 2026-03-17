@@ -233,20 +233,39 @@ ipcMain.handle('install-prereq', async (e, name) => {
     } else {
       const brew = findBrewPath() || 'brew';
       if (name === 'homebrew') {
-        // Install Homebrew non-interactively using sudo password
+        // Step 1: Pre-authorize sudo silently using the stored password
+        // This refreshes the sudo timestamp so brew's internal sudo calls won't prompt
+        try { await run(`echo "${sudoPassword}" | sudo -S -v`); } catch (_) {}
+
+        // Step 2: Run Homebrew installer as the CURRENT USER (not sudo)
+        // Homebrew explicitly refuses to run as root — it handles its own sudo calls internally
+        // NONINTERACTIVE=1 suppresses all prompts; sudo timestamp handles auth
         const installCmd = `NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`;
-        await runStreamingSudo(installCmd, e, logCh);
-        // Add brew to PATH after install
+        await runStreaming(installCmd, e, logCh);
+
+        // Step 3: Add brew to shell profile and refresh PATH
         await refreshPath();
         const newBrew = findBrewPath();
         if (newBrew) {
-          try { await run(`echo 'eval "$(${newBrew} shellenv)"' >> ${os.homedir()}/.zprofile`); } catch (_) {}
+          const profile = path.join(os.homedir(), '.zprofile');
+          const evalLine = `eval "$(${newBrew} shellenv)"`;
+          try {
+            const existing = fs.existsSync(profile) ? fs.readFileSync(profile, 'utf8') : '';
+            if (!existing.includes(evalLine)) {
+              fs.appendFileSync(profile, `\n${evalLine}\n`);
+            }
+          } catch (_) {}
           try { await run(`eval "$(${newBrew} shellenv)"`); } catch (_) {}
         }
       }
-      if (name === 'git')    await runStreamingSudo(`"${brew}" install git`, e, logCh);
-      if (name === 'node')   await runStreamingSudo(`"${brew}" install node@18 && "${brew}" link node@18 --force --overwrite`, e, logCh);
-      if (name === 'python') await runStreamingSudo(`"${brew}" install python@3.10`, e, logCh);
+      // For brew installs — pre-authorize sudo then run brew as normal user
+      // brew handles its own privilege escalation internally
+      if (name === 'git' || name === 'node' || name === 'python') {
+        try { await run(`echo "${sudoPassword}" | sudo -S -v`); } catch (_) {}
+      }
+      if (name === 'git')    await runStreaming(`"${brew}" install git`, e, logCh);
+      if (name === 'node')   await runStreaming(`"${brew}" install node@18 && "${brew}" link node@18 --force --overwrite`, e, logCh);
+      if (name === 'python') await runStreaming(`"${brew}" install python@3.10`, e, logCh);
       if (name === 'uv')     await runStreaming('curl -LsSf https://astral.sh/uv/install.sh | sh', e, logCh);
     }
     await refreshPath();
@@ -268,9 +287,11 @@ ipcMain.handle('update-prereq', async (e, name) => {
       }
     } else {
       const brew = findBrewPath() || 'brew';
-      if (name === 'git')    await runStreamingSudo(`"${brew}" upgrade git`, e, logCh);
-      if (name === 'node')   await runStreamingSudo(`"${brew}" upgrade node@18`, e, logCh);
-      if (name === 'python') await runStreamingSudo(`"${brew}" upgrade python@3.10`, e, logCh);
+      // Pre-authorize sudo so brew's internal escalation doesn't prompt
+      try { await run(`echo "${sudoPassword}" | sudo -S -v`); } catch (_) {}
+      if (name === 'git')    await runStreaming(`"${brew}" upgrade git`, e, logCh);
+      if (name === 'node')   await runStreaming(`"${brew}" upgrade node@18`, e, logCh);
+      if (name === 'python') await runStreaming(`"${brew}" upgrade python@3.10`, e, logCh);
       if (name === 'uv')     await runStreaming('uv self update', e, logCh);
     }
     await refreshPath();
