@@ -52,18 +52,35 @@ ipcMain.handle('verify-sudo-password', async () => {
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 function run(cmd, opts = {}) {
   return new Promise((resolve, reject) => {
-    exec(cmd, { shell: true, ...opts }, (err, stdout, stderr) => {
-      if (err) reject(stderr || err.message);
-      else resolve(stdout.trim());
-    });
+    // On Mac use login shell so system tools and brew are always available
+    const shell = isMac ? '/bin/bash' : true;
+    const args  = isMac ? ['-l', '-c', cmd] : undefined;
+    const execOpts = isMac
+      ? { ...opts }
+      : { shell: true, ...opts };
+
+    if (isMac) {
+      const child = spawn('/bin/bash', ['-l', '-c', cmd], { ...opts });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', d => stdout += d.toString());
+      child.stderr.on('data', d => stderr += d.toString());
+      child.on('close', code => code === 0 ? resolve(stdout.trim()) : reject(stderr.trim() || `Exit ${code}`));
+      child.on('error', reject);
+    } else {
+      exec(cmd, { shell: true, ...opts }, (err, stdout, stderr) => {
+        if (err) reject(stderr || err.message);
+        else resolve(stdout.trim());
+      });
+    }
   });
 }
 
 function runStreaming(cmd, event, logChannel) {
   return new Promise((resolve, reject) => {
+    // On Mac use login shell (-l) so brew and all system tools are available
     const child = isWin
       ? spawn('cmd.exe', ['/c', cmd], { shell: false })
-      : spawn('/bin/bash', ['-c', cmd], { shell: false, env: { ...process.env } });
+      : spawn('/bin/bash', ['-l', '-c', cmd], { shell: false, env: { ...process.env } });
     child.stdout.on('data', (d) =>
       d.toString().split(/\r?\n/).filter(l => l.trim())
         .forEach(l => event.sender.send(logChannel, l)));
@@ -334,7 +351,7 @@ ipcMain.handle('install-prereq', async (e, name) => {
         await runStreaming(`"${brew}" link node@18 --force --overwrite`, e, logCh);
       }
       else if (name === 'python') await runStreaming(`"${brew}" install python@3.10`, e, logCh);
-      else if (name === 'uv')     await runStreaming('curl -LsSf https://astral.sh/uv/install.sh | sh', e, logCh);
+      else if (name === 'uv')     await runStreaming(`HOME="${os.homedir()}" curl -LsSf https://astral.sh/uv/install.sh | sh`, e, logCh);
     }
     await refreshPath();
     return { ok: true };
@@ -360,7 +377,7 @@ ipcMain.handle('update-prereq', async (e, name) => {
       else if (name === 'python') await runStreaming(`"${brew}" upgrade python@3.10`, e, logCh);
       else if (name === 'uv') {
         const uvPath = await findUvPath();
-        const uvCmd  = uvPath ? `"${uvPath}"` : 'uv';
+        const uvCmd  = uvPath ? `"${uvPath}"` : `HOME="${os.homedir()}" uv`;
         await runStreaming(`${uvCmd} self update`, e, logCh);
       }
     }
