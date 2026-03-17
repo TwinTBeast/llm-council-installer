@@ -131,8 +131,8 @@ async function refreshPath() {
   } else {
     for (const dir of [
       '/usr/local/bin', '/opt/homebrew/bin', '/opt/homebrew/sbin',
-      '/opt/homebrew/opt/node@18/bin', '/opt/homebrew/opt/python@3.10/bin',
-      '/usr/local/opt/node@18/bin',    '/usr/local/opt/python@3.10/bin',
+      '/opt/homebrew/opt/node@20/bin', '/opt/homebrew/opt/python@3.10/bin',
+      '/usr/local/opt/node@20/bin',    '/usr/local/opt/python@3.10/bin',
       '/usr/bin', '/bin',
       path.join(os.homedir(), '.local', 'bin'),
       path.join(os.homedir(), '.cargo', 'bin'),
@@ -187,7 +187,7 @@ function versionOk(current, required) {
 
 const MIN_VERSIONS = {
   homebrew: '3.0', git: isMac ? '2.30' : '2.40',
-  node: '18.0', python: '3.10', uv: '0.5'
+  node: '20.0', python: '3.10', uv: '0.5'
 };
 
 // ─── PREREQ CHECK ─────────────────────────────────────────────────────────────
@@ -213,7 +213,7 @@ ipcMain.handle('check-prereq', async (e, name) => {
       case 'node':
         try { version = (await run('node --version')).replace('v',''); }
         catch {
-          for (const p of ['/opt/homebrew/opt/node@18/bin/node','/opt/homebrew/bin/node','/usr/local/opt/node@18/bin/node','/usr/local/bin/node']) {
+          for (const p of ['/opt/homebrew/opt/node@20/bin/node','/opt/homebrew/bin/node','/usr/local/opt/node@20/bin/node','/usr/local/bin/node']) {
             if (fs.existsSync(p)) { version = (await run(`"${p}" --version`)).replace('v',''); break; }
           }
         }
@@ -347,8 +347,8 @@ ipcMain.handle('install-prereq', async (e, name) => {
       // brew install/update — run as normal user (brew handles its own sudo internally)
       else if (name === 'git')    await runStreaming(`"${brew}" install git 2>/dev/null || "${brew}" upgrade git`, e, logCh);
       else if (name === 'node') {
-        await runStreaming(`"${brew}" install node@18 2>/dev/null || "${brew}" upgrade node@18`, e, logCh);
-        await runStreaming(`"${brew}" link node@18 --force --overwrite`, e, logCh);
+        await runStreaming(`"${brew}" install node@20 2>/dev/null || "${brew}" upgrade node@20`, e, logCh);
+        await runStreaming(`"${brew}" link node@20 --force --overwrite`, e, logCh);
       }
       else if (name === 'python') await runStreaming(`"${brew}" install python@3.10 2>/dev/null || "${brew}" upgrade python@3.10`, e, logCh);
       else if (name === 'uv')     await runStreaming(`HOME="${os.homedir()}" curl -LsSf https://astral.sh/uv/install.sh | sh`, e, logCh);
@@ -373,7 +373,7 @@ ipcMain.handle('update-prereq', async (e, name) => {
     } else {
       const brew = findBrewPath() || 'brew';
       if (name === 'git')    await runStreaming(`"${brew}" upgrade git 2>/dev/null || "${brew}" install git`, e, logCh);
-      else if (name === 'node')   await runStreaming(`"${brew}" upgrade node@18 2>/dev/null || "${brew}" install node@18`, e, logCh);
+      else if (name === 'node')   await runStreaming(`"${brew}" upgrade node@20 2>/dev/null || "${brew}" install node@20`, e, logCh);
       else if (name === 'python') await runStreaming(`"${brew}" upgrade python@3.10 2>/dev/null || "${brew}" install python@3.10`, e, logCh);
       else if (name === 'uv') {
         const uvPath = await findUvPath();
