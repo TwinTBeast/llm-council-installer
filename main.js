@@ -135,23 +135,20 @@ async function ensureHomebrew(event) {
   const brewLocations = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
   for (const b of brewLocations) {
     if (fs.existsSync(b)) {
-      // Make sure it's on PATH
       const brewDir = path.dirname(b);
       if (!process.env.PATH.includes(brewDir))
         process.env.PATH = brewDir + ':' + process.env.PATH;
-      return b;  // return the brew path for callers
+      return b;
     }
   }
-  // Not found — install it
-  event.sender.send('prereq-log', 'Homebrew not found — installing...');
-  await runStreaming(
-    '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"',
-    event, 'prereq-log'
+  // Homebrew not found — cannot install from GUI (requires TTY/sudo)
+  // Throw a user-friendly error
+  throw new Error(
+    'Homebrew is required but not installed.\n\n' +
+    'Please open Terminal and run:\n' +
+    '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n\n' +
+    'Then reopen this installer.'
   );
-  await refreshPath();
-  // Return whichever path now exists
-  for (const b of brewLocations) if (fs.existsSync(b)) return b;
-  return 'brew';
 }
 
 function versionOk(current, required) {
@@ -165,10 +162,11 @@ function versionOk(current, required) {
 }
 
 const MIN_VERSIONS = {
-  git:    isMac ? '2.30' : '2.40',  // Mac ships 2.39 via Xcode — perfectly usable
-  node:   '18.0',
-  python: '3.10',
-  uv:     '0.5'
+  git:      isMac ? '2.30' : '2.40',
+  node:     '18.0',
+  python:   '3.10',
+  uv:       '0.5',
+  homebrew: '3.0',  // Mac only
 };
 
 ipcMain.handle('check-prereq', async (e, name) => {
@@ -228,6 +226,15 @@ ipcMain.handle('check-prereq', async (e, name) => {
         try { await run('uv --version'); }
         catch { const p = await findUvPath(); if (p) uvCmd=`"${p}"`; else throw new Error('not found'); }
         version = (await run(`${uvCmd} --version`)).split(' ')[1];
+        break;
+      }
+      case 'homebrew': {
+        // Mac only
+        const brewLocations = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
+        let brewPath = null;
+        for (const b of brewLocations) if (fs.existsSync(b)) { brewPath = b; break; }
+        if (!brewPath) throw new Error('Homebrew not found');
+        version = (await run(`"${brewPath}" --version`)).split(' ')[1].replace(',','');
         break;
       }
     }

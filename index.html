@@ -194,6 +194,17 @@
         <button class="action-btn update"  id="update-uv" style="display:none" onclick="updatePrereq('uv')">Update</button>
       </div>
 
+      <!-- Homebrew row — shown on Mac only -->
+      <div class="prereq-row" id="row-homebrew" style="display:none">
+        <div class="prereq-icon">🍺</div>
+        <div class="prereq-info">
+          <div class="prereq-name">Homebrew (Mac package manager)</div>
+          <div class="prereq-status" id="status-homebrew">Not checked yet</div>
+        </div>
+        <div class="prereq-badge" id="badge-homebrew">⬜</div>
+        <button class="action-btn install" id="fix-homebrew" style="display:none" onclick="openBrewInstallInstructions()">How to Install</button>
+      </div>
+
     </div>
 
     <!-- Live log panel — shown during install/update only -->
@@ -233,8 +244,29 @@
 
   <script>
     const { ipcRenderer } = require('electron');
-    const prereqs = ['git', 'node', 'python', 'uv'];
-    let prereqStatus = { git: false, node: false, python: false, uv: false };
+    const os = require('os');
+    const isMac = process.platform === 'darwin';
+
+    // On Mac, show Homebrew row and set default install dir to ~/LLMCouncil
+    const basePrereqs = ['git', 'node', 'python', 'uv'];
+    const prereqs = isMac ? [...basePrereqs, 'homebrew'] : basePrereqs;
+    let prereqStatus = { git: false, node: false, python: false, uv: false, homebrew: true };
+
+    if (isMac) {
+      document.getElementById('row-homebrew').style.display = 'flex';
+      prereqStatus.homebrew = false;
+      // Set default install dir to Mac-appropriate path
+      const installDirEl = document.getElementById('install-dir');
+      if (installDirEl) installDirEl.value = os.homedir() + '/LLMCouncil';
+    }
+
+    function openBrewInstallInstructions() {
+      const { shell } = require('electron');
+      // Open Terminal with brew install command
+      const { exec } = require('child_process');
+      exec(`osascript -e 'tell application "Terminal" to do script "/bin/bash -c \\\\\"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\\\\\""'`);
+    }
+
     let activeInstallName = null;
 
     // ── Prereq log panel helpers ─────────────────────────────────────────────
@@ -277,8 +309,10 @@
     }
 
     function resetButtons(name) {
-      document.getElementById('fix-' + name).style.display = 'none';
-      document.getElementById('update-' + name).style.display = 'none';
+      const fixBtn    = document.getElementById('fix-' + name);
+      const updateBtn = document.getElementById('update-' + name);
+      if (fixBtn)    fixBtn.style.display    = 'none';
+      if (updateBtn) updateBtn.style.display = 'none';
     }
 
     function checkAllOk() {
@@ -299,13 +333,20 @@
         const result = await ipcRenderer.invoke('check-prereq', name);
 
         if (!result.found) {
-          setStatus(name, 'fail', '❌', `Not found — required v${result.required}+`);
-          prereqStatus[name] = false;
-          document.getElementById('fix-' + name).style.display = 'inline-block';
+          if (name === 'homebrew') {
+            setStatus(name, 'fail', '❌', 'Not found — must be installed manually in Terminal first');
+            prereqStatus[name] = false;
+            document.getElementById('fix-homebrew').style.display = 'inline-block';
+          } else {
+            setStatus(name, 'fail', '❌', `Not found — required v${result.required}+`);
+            prereqStatus[name] = false;
+            document.getElementById('fix-' + name).style.display = 'inline-block';
+          }
         } else if (!result.ok) {
           setStatus(name, 'warn', '⚠️', `v${result.version} found — v${result.required}+ required`);
           prereqStatus[name] = false;
-          document.getElementById('update-' + name).style.display = 'inline-block';
+          const updateBtn = document.getElementById('update-' + name);
+          if (updateBtn) updateBtn.style.display = 'inline-block';
         } else {
           setStatus(name, 'ok', '✅', `v${result.version} — OK`);
           prereqStatus[name] = true;
