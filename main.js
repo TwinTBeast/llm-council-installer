@@ -348,7 +348,22 @@ ipcMain.handle('install-prereq', async (e, name) => {
       else if (name === 'git')    await runStreaming(`"${brew}" install git 2>/dev/null || "${brew}" upgrade git`, e, logCh);
       else if (name === 'node') {
         await runStreaming(`"${brew}" install node@20 2>/dev/null || "${brew}" upgrade node@20`, e, logCh);
-        await runStreaming(`"${brew}" link node@20 --force --overwrite`, e, logCh);
+        await runStreaming(`"${brew}" unlink node@18 2>/dev/null; "${brew}" link node@20 --force --overwrite`, e, logCh);
+        // Add node@20 bin to PATH in shell profile so it persists
+        const nodePaths = ['/usr/local/opt/node@20/bin', '/opt/homebrew/opt/node@20/bin'];
+        for (const np of nodePaths) {
+          if (fs.existsSync(np)) {
+            const zprofile = path.join(os.homedir(), '.zprofile');
+            const exportLine = `export PATH="${np}:$PATH"`;
+            const existing = fs.existsSync(zprofile) ? fs.readFileSync(zprofile, 'utf8') : '';
+            if (!existing.includes(np)) {
+              fs.appendFileSync(zprofile, `\n${exportLine}\n`);
+            }
+            // Also activate immediately in current process
+            process.env.PATH = np + ':' + process.env.PATH;
+            break;
+          }
+        }
       }
       else if (name === 'python') await runStreaming(`"${brew}" install python@3.10 2>/dev/null || "${brew}" upgrade python@3.10`, e, logCh);
       else if (name === 'uv')     await runStreaming(`HOME="${os.homedir()}" curl -LsSf https://astral.sh/uv/install.sh | sh`, e, logCh);
@@ -373,7 +388,21 @@ ipcMain.handle('update-prereq', async (e, name) => {
     } else {
       const brew = findBrewPath() || 'brew';
       if (name === 'git')    await runStreaming(`"${brew}" upgrade git 2>/dev/null || "${brew}" install git`, e, logCh);
-      else if (name === 'node')   await runStreaming(`"${brew}" upgrade node@20 2>/dev/null || "${brew}" install node@20`, e, logCh);
+      else if (name === 'node') {
+        await runStreaming(`"${brew}" upgrade node@20 2>/dev/null || "${brew}" install node@20`, e, logCh);
+        await runStreaming(`"${brew}" unlink node@18 2>/dev/null; "${brew}" link node@20 --force --overwrite`, e, logCh);
+        const nodePaths = ['/usr/local/opt/node@20/bin', '/opt/homebrew/opt/node@20/bin'];
+        for (const np of nodePaths) {
+          if (fs.existsSync(np)) {
+            const zprofile = path.join(os.homedir(), '.zprofile');
+            const exportLine = `export PATH="${np}:$PATH"`;
+            const existing = fs.existsSync(zprofile) ? fs.readFileSync(zprofile, 'utf8') : '';
+            if (!existing.includes(np)) fs.appendFileSync(zprofile, `\n${exportLine}\n`);
+            process.env.PATH = np + ':' + process.env.PATH;
+            break;
+          }
+        }
+      }
       else if (name === 'python') await runStreaming(`"${brew}" upgrade python@3.10 2>/dev/null || "${brew}" install python@3.10`, e, logCh);
       else if (name === 'uv') {
         const uvPath = await findUvPath();
