@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { exec, spawn } = require('child_process');
 const fs = require('fs');
@@ -8,16 +8,13 @@ const isMac = process.platform === 'darwin';
 const isWin = process.platform === 'win32';
 
 let mainWindow;
+let sudoPassword = '';  // Held in memory only, never written to disk
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 700,
-    height: 760,
+    width: 700, height: 780,
     resizable: false,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false
-    },
+    webPreferences: { nodeIntegration: true, contextIsolation: false },
     title: 'LLM Council Plus — Installer',
     autoHideMenuBar: true
   });
@@ -28,6 +25,31 @@ app.whenReady().then(createWindow);
 app.on('window-all-closed', () => { if (!isMac) app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 
+// ─── BANNER BASE64 ────────────────────────────────────────────────────────────
+ipcMain.handle('get-banner-base64', () => {
+  const candidates = [
+    path.join(__dirname, 'banner.png'),
+    path.join(process.resourcesPath || '', 'app', 'banner.png'),
+    path.join(process.resourcesPath || '', 'banner.png'),
+  ];
+  for (const c of candidates) {
+    try { if (fs.existsSync(c)) return fs.readFileSync(c).toString('base64'); } catch (_) {}
+  }
+  return null;
+});
+
+// ─── SUDO PASSWORD ────────────────────────────────────────────────────────────
+ipcMain.handle('set-sudo-password', (e, pwd) => { sudoPassword = pwd; return true; });
+ipcMain.handle('verify-sudo-password', async () => {
+  try {
+    await run(`echo "${sudoPassword}" | sudo -S -v`);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.toString() };
+  }
+});
+
+// ─── UTILITIES ────────────────────────────────────────────────────────────────
 function run(cmd, opts = {}) {
   return new Promise((resolve, reject) => {
     exec(cmd, { shell: true, ...opts }, (err, stdout, stderr) => {
@@ -41,14 +63,14 @@ function runStreaming(cmd, event, logChannel) {
   return new Promise((resolve, reject) => {
     const child = isWin
       ? spawn('cmd.exe', ['/c', cmd], { shell: false })
-      : spawn('/bin/bash', ['-c', cmd], { shell: false });
+      : spawn('/bin/bash', ['-c', cmd], { shell: false, env: { ...process.env } });
     child.stdout.on('data', (d) =>
       d.toString().split(/\r?\n/).filter(l => l.trim())
-        .forEach(line => event.sender.send(logChannel, line)));
+        .forEach(l => event.sender.send(logChannel, l)));
     child.stderr.on('data', (d) =>
       d.toString().split(/\r?\n/).filter(l => l.trim())
-        .forEach(line => event.sender.send(logChannel, line)));
-    child.on('close', (code) => code === 0 ? resolve() : reject(`Exit code ${code}`));
+        .forEach(l => event.sender.send(logChannel, l)));
+    child.on('close', code => code === 0 ? resolve() : reject(`Exit ${code}`));
     child.on('error', reject);
   });
 }
@@ -60,15 +82,22 @@ function runStreamingPowerShell(psScript, event, logChannel) {
       { shell: false });
     child.stdout.on('data', (d) =>
       d.toString().split(/\r?\n/).filter(l => l.trim())
-        .forEach(line => event.sender.send(logChannel, line)));
+        .forEach(l => event.sender.send(logChannel, l)));
     child.stderr.on('data', (d) =>
       d.toString().split(/\r?\n/).filter(l => l.trim())
-        .forEach(line => event.sender.send(logChannel, line)));
-    child.on('close', (code) => code === 0 ? resolve() : reject(`PS exit ${code}`));
+        .forEach(l => event.sender.send(logChannel, l)));
+    child.on('close', code => code === 0 ? resolve() : reject(`PS exit ${code}`));
     child.on('error', reject);
   });
 }
 
+// Run a command with sudo password piped via stdin
+function runStreamingSudo(cmd, event, logChannel) {
+  const fullCmd = `echo "${sudoPassword}" | sudo -S ${cmd}`;
+  return runStreaming(fullCmd, event, logChannel);
+}
+
+// ─── PATH REFRESH ─────────────────────────────────────────────────────────────
 async function refreshPath() {
   if (isWin) {
     try {
@@ -83,30 +112,21 @@ async function refreshPath() {
       path.join(os.homedir(), 'AppData', 'Roaming', 'uv', 'bin'),
     ]) { if (!process.env.PATH.includes(dir)) process.env.PATH = dir + ';' + process.env.PATH; }
   } else {
-    // Always prepend known Mac locations — covers both Intel and Apple Silicon
     for (const dir of [
-      '/usr/local/bin',
-      '/opt/homebrew/bin',
-      '/opt/homebrew/sbin',
-      '/opt/homebrew/opt/node@18/bin',
-      '/opt/homebrew/opt/python@3.10/bin',
-      '/usr/local/opt/node@18/bin',
-      '/usr/local/opt/python@3.10/bin',
-      '/usr/bin',
-      '/bin',
+      '/usr/local/bin', '/opt/homebrew/bin', '/opt/homebrew/sbin',
+      '/opt/homebrew/opt/node@18/bin', '/opt/homebrew/opt/python@3.10/bin',
+      '/usr/local/opt/node@18/bin',    '/usr/local/opt/python@3.10/bin',
+      '/usr/bin', '/bin',
       path.join(os.homedir(), '.local', 'bin'),
       path.join(os.homedir(), '.cargo', 'bin'),
     ]) { if (!process.env.PATH.includes(dir)) process.env.PATH = dir + ':' + process.env.PATH; }
 
-    // Also source brew shellenv if brew exists — sets HOMEBREW_PREFIX etc.
+    // Source brew shellenv
     try {
-      const brewPath = fs.existsSync('/opt/homebrew/bin/brew')
-        ? '/opt/homebrew/bin/brew'
-        : '/usr/local/bin/brew';
-      if (fs.existsSync(brewPath)) {
-        const brewEnv = await run(`"${brewPath}" shellenv`);
-        // Parse export statements and apply to process.env
-        brewEnv.split('\n').forEach(line => {
+      const brewBin = fs.existsSync('/opt/homebrew/bin/brew') ? '/opt/homebrew/bin/brew' : '/usr/local/bin/brew';
+      if (fs.existsSync(brewBin)) {
+        const env = await run(`"${brewBin}" shellenv`);
+        env.split('\n').forEach(line => {
           const m = line.match(/^export\s+(\w+)="?([^"]*)"?/);
           if (m) process.env[m[1]] = m[2];
         });
@@ -115,6 +135,7 @@ async function refreshPath() {
   }
 }
 
+// ─── UV / BREW FINDERS ────────────────────────────────────────────────────────
 async function findUvPath() {
   const candidates = isWin ? [
     path.join(os.homedir(), '.local', 'bin', 'uv.exe'),
@@ -130,27 +151,13 @@ async function findUvPath() {
   return null;
 }
 
-async function ensureHomebrew(event) {
-  // Check both Apple Silicon (/opt/homebrew) and Intel (/usr/local) locations
-  const brewLocations = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
-  for (const b of brewLocations) {
-    if (fs.existsSync(b)) {
-      const brewDir = path.dirname(b);
-      if (!process.env.PATH.includes(brewDir))
-        process.env.PATH = brewDir + ':' + process.env.PATH;
-      return b;
-    }
-  }
-  // Homebrew not found — cannot install from GUI (requires TTY/sudo)
-  // Throw a user-friendly error
-  throw new Error(
-    'Homebrew is required but not installed.\n\n' +
-    'Please open Terminal and run:\n' +
-    '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"\n\n' +
-    'Then reopen this installer.'
-  );
+function findBrewPath() {
+  if (fs.existsSync('/opt/homebrew/bin/brew')) return '/opt/homebrew/bin/brew';
+  if (fs.existsSync('/usr/local/bin/brew'))    return '/usr/local/bin/brew';
+  return null;
 }
 
+// ─── VERSION COMPARE ──────────────────────────────────────────────────────────
 function versionOk(current, required) {
   const parse = v => v.replace(/[^0-9.]/g, '').split('.').map(Number);
   const c = parse(current), r = parse(required);
@@ -162,63 +169,42 @@ function versionOk(current, required) {
 }
 
 const MIN_VERSIONS = {
-  git:      isMac ? '2.30' : '2.40',
-  node:     '18.0',
-  python:   '3.10',
-  uv:       '0.5',
-  homebrew: '3.0',  // Mac only
+  homebrew: '3.0', git: isMac ? '2.30' : '2.40',
+  node: '18.0', python: '3.10', uv: '0.5'
 };
 
+// ─── PREREQ CHECK ─────────────────────────────────────────────────────────────
 ipcMain.handle('check-prereq', async (e, name) => {
   await refreshPath();
   try {
     let version = '';
     switch (name) {
+      case 'homebrew': {
+        const b = findBrewPath();
+        if (!b) throw new Error('not found');
+        version = (await run(`"${b}" --version`)).split(' ')[1].replace(',','');
+        break;
+      }
       case 'git':
         version = (await run('git --version')).split(' ')[2];
         break;
       case 'node':
-        if (isMac) {
-          // Try PATH first, then brew-specific locations
-          try { version = (await run('node --version')).replace('v',''); }
-          catch {
-            for (const p of [
-              '/opt/homebrew/opt/node@18/bin/node',
-              '/opt/homebrew/bin/node',
-              '/usr/local/opt/node@18/bin/node',
-              '/usr/local/bin/node',
-            ]) {
-              if (fs.existsSync(p)) { version = (await run(`"${p}" --version`)).replace('v',''); break; }
-            }
+        try { version = (await run('node --version')).replace('v',''); }
+        catch {
+          for (const p of ['/opt/homebrew/opt/node@18/bin/node','/opt/homebrew/bin/node','/usr/local/opt/node@18/bin/node','/usr/local/bin/node']) {
+            if (fs.existsSync(p)) { version = (await run(`"${p}" --version`)).replace('v',''); break; }
           }
-        } else {
-          version = (await run('node --version')).replace('v','');
         }
         break;
       case 'python':
-        if (isMac) {
-          // Try python3.10 specifically first (brew installs it as python3.10)
-          // then fall back to python3/python
-          try { version = (await run('python3.10 --version')).replace('Python ',''); }
-          catch {
-            try {
-              // Check brew-installed python3.10 by absolute path
-              for (const p of [
-                '/opt/homebrew/opt/python@3.10/bin/python3.10',
-                '/opt/homebrew/bin/python3.10',
-                '/usr/local/opt/python@3.10/bin/python3.10',
-                '/usr/local/bin/python3.10',
-              ]) {
-                if (fs.existsSync(p)) { version = (await run(`"${p}" --version`)).replace('Python ',''); break; }
-              }
-            } catch {}
-            if (!version) {
-              try { version = (await run('python3 --version')).replace('Python ',''); } catch {}
-            }
+        try { version = (await run('python3.10 --version')).replace('Python ',''); }
+        catch {
+          for (const p of ['/opt/homebrew/opt/python@3.10/bin/python3.10','/opt/homebrew/bin/python3.10','/usr/local/opt/python@3.10/bin/python3.10']) {
+            if (fs.existsSync(p)) { version = (await run(`"${p}" --version`)).replace('Python ',''); break; }
           }
-        } else {
-          try { version = (await run('python3 --version')).replace('Python ',''); }
-          catch { version = (await run('python --version')).replace('Python ',''); }
+          if (!version) {
+            try { version = (await run('python3 --version')).replace('Python ',''); } catch {}
+          }
         }
         break;
       case 'uv': {
@@ -228,64 +214,79 @@ ipcMain.handle('check-prereq', async (e, name) => {
         version = (await run(`${uvCmd} --version`)).split(' ')[1];
         break;
       }
-      case 'homebrew': {
-        // Mac only
-        const brewLocations = ['/opt/homebrew/bin/brew', '/usr/local/bin/brew'];
-        let brewPath = null;
-        for (const b of brewLocations) if (fs.existsSync(b)) { brewPath = b; break; }
-        if (!brewPath) throw new Error('Homebrew not found');
-        version = (await run(`"${brewPath}" --version`)).split(' ')[1].replace(',','');
-        break;
-      }
     }
-    if (!version) throw new Error('version empty');
+    if (!version) throw new Error('empty version');
     const ok = versionOk(version, MIN_VERSIONS[name]);
     return { found: true, ok, version, required: MIN_VERSIONS[name] };
   } catch { return { found: false, ok: false, version: null, required: MIN_VERSIONS[name] }; }
 });
 
+// ─── PREREQ INSTALL ───────────────────────────────────────────────────────────
 ipcMain.handle('install-prereq', async (e, name) => {
+  const logCh = 'prereq-log-' + name;
   try {
     if (isWin) {
-      if (name === 'git')    await runStreaming('winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements', e, 'prereq-log');
-      if (name === 'node')   await runStreaming('winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements', e, 'prereq-log');
-      if (name === 'python') await runStreaming('winget install --id Python.Python.3.10 -e --source winget --accept-package-agreements --accept-source-agreements', e, 'prereq-log');
-      if (name === 'uv')     await runStreamingPowerShell('irm https://astral.sh/uv/install.ps1 | iex', e, 'prereq-log');
+      if (name === 'git')    await runStreaming('winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements', e, logCh);
+      if (name === 'node')   await runStreaming('winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements', e, logCh);
+      if (name === 'python') await runStreaming('winget install --id Python.Python.3.10 -e --source winget --accept-package-agreements --accept-source-agreements', e, logCh);
+      if (name === 'uv')     await runStreamingPowerShell('irm https://astral.sh/uv/install.ps1 | iex', e, logCh);
     } else {
-      if (name === 'git')    { const b = await ensureHomebrew(e); await runStreaming(`"${b}" install git`, e, 'prereq-log'); }
-      if (name === 'node')   { const b = await ensureHomebrew(e); await runStreaming(`"${b}" install node@18 && "${b}" link node@18 --force --overwrite`, e, 'prereq-log'); }
-      if (name === 'python') { const b = await ensureHomebrew(e); await runStreaming(`"${b}" install python@3.10`, e, 'prereq-log'); }
-      if (name === 'uv')     await runStreaming('curl -LsSf https://astral.sh/uv/install.sh | sh', e, 'prereq-log');
+      const brew = findBrewPath() || 'brew';
+      if (name === 'homebrew') {
+        // Install Homebrew non-interactively using sudo password
+        const installCmd = `NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`;
+        await runStreamingSudo(installCmd, e, logCh);
+        // Add brew to PATH after install
+        await refreshPath();
+        const newBrew = findBrewPath();
+        if (newBrew) {
+          try { await run(`echo 'eval "$(${newBrew} shellenv)"' >> ${os.homedir()}/.zprofile`); } catch (_) {}
+          try { await run(`eval "$(${newBrew} shellenv)"`); } catch (_) {}
+        }
+      }
+      if (name === 'git')    await runStreamingSudo(`"${brew}" install git`, e, logCh);
+      if (name === 'node')   await runStreamingSudo(`"${brew}" install node@18 && "${brew}" link node@18 --force --overwrite`, e, logCh);
+      if (name === 'python') await runStreamingSudo(`"${brew}" install python@3.10`, e, logCh);
+      if (name === 'uv')     await runStreaming('curl -LsSf https://astral.sh/uv/install.sh | sh', e, logCh);
     }
     await refreshPath();
     return { ok: true };
   } catch (err) { return { ok: false, error: err.toString() }; }
 });
 
+// ─── PREREQ UPDATE ────────────────────────────────────────────────────────────
 ipcMain.handle('update-prereq', async (e, name) => {
+  const logCh = 'prereq-log-' + name;
   try {
     if (isWin) {
-      if (name === 'git')    await runStreaming('winget upgrade --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements', e, 'prereq-log');
-      if (name === 'node')   await runStreaming('winget upgrade --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements', e, 'prereq-log');
-      if (name === 'python') await runStreaming('winget upgrade --id Python.Python.3.10 -e --source winget --accept-package-agreements --accept-source-agreements', e, 'prereq-log');
+      if (name === 'git')    await runStreaming('winget upgrade --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements', e, logCh);
+      if (name === 'node')   await runStreaming('winget upgrade --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements', e, logCh);
+      if (name === 'python') await runStreaming('winget upgrade --id Python.Python.3.10 -e --source winget --accept-package-agreements --accept-source-agreements', e, logCh);
       if (name === 'uv') {
-        let uvCmd = 'uv';
-        const p = await findUvPath(); if (p) uvCmd = `"${p}"`;
-        await runStreaming(`${uvCmd} self update`, e, 'prereq-log');
+        let uvCmd = 'uv'; const p = await findUvPath(); if (p) uvCmd = `"${p}"`;
+        await runStreaming(`${uvCmd} self update`, e, logCh);
       }
     } else {
-      if (name === 'git')    { const b = await ensureHomebrew(e); await runStreaming(`"${b}" upgrade git`, e, 'prereq-log'); }
-      if (name === 'node')   { const b = await ensureHomebrew(e); await runStreaming(`"${b}" upgrade node@18`, e, 'prereq-log'); }
-      if (name === 'python') { const b = await ensureHomebrew(e); await runStreaming(`"${b}" upgrade python@3.10`, e, 'prereq-log'); }
-      if (name === 'uv')     await runStreaming('uv self update', e, 'prereq-log');
+      const brew = findBrewPath() || 'brew';
+      if (name === 'git')    await runStreamingSudo(`"${brew}" upgrade git`, e, logCh);
+      if (name === 'node')   await runStreamingSudo(`"${brew}" upgrade node@18`, e, logCh);
+      if (name === 'python') await runStreamingSudo(`"${brew}" upgrade python@3.10`, e, logCh);
+      if (name === 'uv')     await runStreaming('uv self update', e, logCh);
     }
     await refreshPath();
     return { ok: true };
   } catch (err) { return { ok: false, error: err.toString() }; }
+});
+
+// ─── BROWSE ───────────────────────────────────────────────────────────────────
+ipcMain.handle('browse-folder', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openDirectory', 'createDirectory']
+  });
+  return result.canceled ? null : result.filePaths[0];
 });
 
 // ─── MAIN INSTALL ─────────────────────────────────────────────────────────────
-
 ipcMain.on('start-install', async (event, { installDir }) => {
   const send = (msg, pct) => event.sender.send('progress', { msg, pct });
   try {
@@ -310,11 +311,8 @@ ipcMain.on('start-install', async (event, { installDir }) => {
     send('Frontend dependencies ready ✅', 75);
 
     send('Creating launcher...', 80);
-    if (isWin) {
-      await createWindowsLauncher(repoPath, uvExeResolved, send);
-    } else {
-      await createMacLauncher(repoPath, uvExeResolved, send);
-    }
+    if (isWin) await createWindowsLauncher(repoPath, uvExeResolved, send);
+    else        await createMacLauncher(repoPath, uvExeResolved, send);
 
     send('All done! 🎉', 100);
     event.sender.send('done');
@@ -322,7 +320,6 @@ ipcMain.on('start-install', async (event, { installDir }) => {
 });
 
 // ─── WINDOWS LAUNCHER ─────────────────────────────────────────────────────────
-
 async function createWindowsLauncher(repoPath, uvExeResolved, send) {
   const launcherPath = path.join(repoPath, 'launch.vbs');
   const trayPsPath   = path.join(repoPath, 'tray.ps1');
@@ -376,35 +373,24 @@ $notifyIcon.BalloonTipIcon = 'Info'; $notifyIcon.ShowBalloonTip(4000)
     `WshShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""${trayPsPath}""", 0, False`,
     'Set WshShell = Nothing',
   ].join('\r\n'));
-  send('Launcher script created ✅', 85);
+  send('Launcher created ✅', 85);
 
   send('Creating desktop shortcut...', 90);
-  const desktop      = path.join(os.homedir(), 'Desktop');
+  const desktop = path.join(os.homedir(), 'Desktop');
   const shortcutPath = path.join(desktop, 'LLM Council Plus.lnk');
-  const oldBat       = path.join(repoPath, 'launch.bat');
-  try { if (fs.existsSync(oldBat))       fs.unlinkSync(oldBat); }       catch (_) {}
+  const oldBat = path.join(repoPath, 'launch.bat');
+  try { if (fs.existsSync(oldBat)) fs.unlinkSync(oldBat); } catch (_) {}
   try { if (fs.existsSync(shortcutPath)) fs.unlinkSync(shortcutPath); } catch (_) {}
 
   const appIcon = path.join(repoPath, 'icon.ico');
-  const iconCandidates = [
+  for (const c of [
     path.join(process.resourcesPath, '..', 'icon.ico'),
     path.join(__dirname, 'icon.ico'),
     path.join(process.resourcesPath, 'icon.ico'),
-    path.join(process.resourcesPath, 'app', 'icon.ico'),
-  ];
-  let iconCopied = false;
-  for (const c of iconCandidates) {
-    try { if (fs.existsSync(c)) { fs.copyFileSync(c, appIcon); iconCopied = true; break; } } catch (_) {}
-  }
-  if (!iconCopied) {
-    try {
-      const script = `Add-Type -AssemblyName System.Drawing; $ico = [System.Drawing.Icon]::ExtractAssociatedIcon('${process.execPath}'); $s = [System.IO.File]::OpenWrite('${appIcon}'); $ico.Save($s); $s.Close()`;
-      await run(`powershell -NoProfile -Command "${script}"`);
-    } catch (_) {}
-  }
+  ]) { try { if (fs.existsSync(c)) { fs.copyFileSync(c, appIcon); break; } } catch (_) {} }
 
   const iconArg = fs.existsSync(appIcon) ? `$s.IconLocation = '${appIcon},0'` : '';
-  const shortcutScript = [
+  const script = [
     `$ws = New-Object -ComObject WScript.Shell`,
     `$s = $ws.CreateShortcut('${shortcutPath}')`,
     `$s.TargetPath = 'wscript.exe'`,
@@ -413,18 +399,17 @@ $notifyIcon.BalloonTipIcon = 'Info'; $notifyIcon.ShowBalloonTip(4000)
     `$s.Description = 'Launch LLM Council Plus'`,
     iconArg, `$s.Save()`
   ].filter(Boolean).join('; ');
-  await run(`powershell -Command "${shortcutScript}"`);
+  await run(`powershell -Command "${script}"`);
   send('Desktop shortcut created ✅', 95);
 }
 
 // ─── MAC LAUNCHER ─────────────────────────────────────────────────────────────
-
 async function createMacLauncher(repoPath, uvExeResolved, send) {
   const launchShPath  = path.join(repoPath, 'launch.sh');
   const appBundlePath = path.join(repoPath, 'LLM Council Plus.app');
   const appMacOSDir   = path.join(appBundlePath, 'Contents', 'MacOS');
   const appResDir     = path.join(appBundlePath, 'Contents', 'Resources');
-  const execPath      = path.join(appMacOSDir, 'launch');
+  const execFilePath  = path.join(appMacOSDir, 'launch');
 
   const extraPaths = [
     '/usr/local/bin', '/opt/homebrew/bin', '/opt/homebrew/sbin',
@@ -432,7 +417,6 @@ async function createMacLauncher(repoPath, uvExeResolved, send) {
     path.join(os.homedir(), '.cargo', 'bin'),
   ].join(':');
 
-  // launch.sh — runs backend + frontend in background
   fs.writeFileSync(launchShPath, [
     '#!/bin/bash',
     `export PATH="${extraPaths}:$PATH"`,
@@ -448,15 +432,11 @@ async function createMacLauncher(repoPath, uvExeResolved, send) {
     'wait $BACKEND_PID $FRONTEND_PID',
   ].join('\n'));
   await run(`chmod +x "${launchShPath}"`);
-  send('Launch script created ✅', 83);
 
-  // .app bundle
   fs.mkdirSync(appMacOSDir, { recursive: true });
   fs.mkdirSync(appResDir,   { recursive: true });
-
-  fs.writeFileSync(execPath, ['#!/bin/bash', `exec "${launchShPath}"`].join('\n'));
-  await run(`chmod +x "${execPath}"`);
-
+  fs.writeFileSync(execFilePath, ['#!/bin/bash', `exec "${launchShPath}"`].join('\n'));
+  await run(`chmod +x "${execFilePath}"`);
   fs.writeFileSync(path.join(appBundlePath, 'Contents', 'Info.plist'), `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -468,24 +448,17 @@ async function createMacLauncher(repoPath, uvExeResolved, send) {
   <key>CFBundleIconFile</key><string>AppIcon</string>
 </dict></plist>`);
 
-  // Copy icon.png into bundle
-  for (const c of [
-    path.join(process.resourcesPath, '..', 'icon.png'),
-    path.join(__dirname, 'icon.png'),
-    path.join(process.resourcesPath, 'icon.png'),
-  ]) {
-    try { if (fs.existsSync(c)) { fs.copyFileSync(c, path.join(appResDir, 'AppIcon.png')); break; } }
-    catch (_) {}
+  for (const c of [path.join(process.resourcesPath||'','..','icon.png'), path.join(__dirname,'icon.png')]) {
+    try { if (fs.existsSync(c)) { fs.copyFileSync(c, path.join(appResDir,'AppIcon.png')); break; } } catch (_) {}
   }
-  send('App bundle created ✅', 87);
+  send('Launcher created ✅', 87);
 
-  // Install to Applications + Desktop
-  send('Installing to Applications folder...', 90);
-  const appsTarget   = '/Applications/LLM Council Plus.app';
+  send('Installing to Applications & Desktop...', 90);
+  const appsTarget    = '/Applications/LLM Council Plus.app';
   const desktopTarget = path.join(os.homedir(), 'Desktop', 'LLM Council Plus.app');
-  try { await run(`rm -rf "${appsTarget}"`);   } catch (_) {}
+  try { await run(`rm -rf "${appsTarget}"`);    } catch (_) {}
   try { await run(`rm -rf "${desktopTarget}"`); } catch (_) {}
-  try { await run(`cp -r "${appBundlePath}" "${appsTarget}"`);   } catch (_) {}
+  try { await run(`cp -r "${appBundlePath}" "${appsTarget}"`);    } catch (_) {}
   try { await run(`cp -r "${appBundlePath}" "${desktopTarget}"`); } catch (_) {}
   send('Added to Applications & Desktop ✅', 95);
 }
