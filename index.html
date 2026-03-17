@@ -202,7 +202,7 @@
           <div class="prereq-status" id="status-homebrew">Not checked yet</div>
         </div>
         <div class="prereq-badge" id="badge-homebrew">⬜</div>
-        <button class="action-btn install" id="fix-homebrew" style="display:none" onclick="openBrewInstallInstructions()">How to Install</button>
+        <button class="action-btn install" id="fix-homebrew" style="display:none" onclick="installBrewViaTerminal()">Open Terminal to Install</button>
       </div>
 
     </div>
@@ -260,11 +260,35 @@
       if (installDirEl) installDirEl.value = os.homedir() + '/LLMCouncil';
     }
 
-    function openBrewInstallInstructions() {
-      const { shell } = require('electron');
-      // Open Terminal with brew install command
+    let brewPollInterval = null;
+
+    function installBrewViaTerminal() {
       const { exec } = require('child_process');
-      exec(`osascript -e 'tell application "Terminal" to do script "/bin/bash -c \\\\\"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\\\\\""'`);
+      const brewCmd = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"';
+      // Open Terminal and run brew installer — Terminal provides the TTY that brew requires
+      const script = `osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "${brewCmd}"'`;
+      exec(script, (err) => {
+        if (err) {
+          alert('Please open Terminal manually and run:\n\n' + brewCmd);
+          return;
+        }
+      });
+      // Update status to let user know what's happening
+      setStatus('homebrew', 'checking', '⏳', 'Installing in Terminal — this takes 2–5 mins. Will auto-detect when done...');
+      document.getElementById('fix-homebrew').style.display = 'none';
+
+      // Auto-poll every 8 seconds until brew is found
+      if (brewPollInterval) clearInterval(brewPollInterval);
+      brewPollInterval = setInterval(async () => {
+        const result = await ipcRenderer.invoke('check-prereq', 'homebrew');
+        if (result.found && result.ok) {
+          clearInterval(brewPollInterval);
+          brewPollInterval = null;
+          setStatus('homebrew', 'ok', '✅', `v${result.version} — OK`);
+          prereqStatus['homebrew'] = true;
+          checkAllOk();
+        }
+      }, 8000);
     }
 
     let activeInstallName = null;
