@@ -297,10 +297,13 @@ ipcMain.handle('install-prereq', async (e, name) => {
         await refreshPath();
       }
       // brew install/update — run as normal user (brew handles its own sudo internally)
-      if (name === 'git')    await runStreaming(`"${brew}" install git`, e, logCh);
-      if (name === 'node')   await runStreaming(`"${brew}" install node@18 && "${brew}" link node@18 --force --overwrite`, e, logCh);
-      if (name === 'python') await runStreaming(`"${brew}" install python@3.10`, e, logCh);
-      if (name === 'uv')     await runStreaming('curl -LsSf https://astral.sh/uv/install.sh | sh', e, logCh);
+      else if (name === 'git')    await runStreaming(`"${brew}" install git`, e, logCh);
+      else if (name === 'node') {
+        await runStreaming(`"${brew}" install node@18`, e, logCh);
+        await runStreaming(`"${brew}" link node@18 --force --overwrite`, e, logCh);
+      }
+      else if (name === 'python') await runStreaming(`"${brew}" install python@3.10`, e, logCh);
+      else if (name === 'uv')     await runStreaming('curl -LsSf https://astral.sh/uv/install.sh | sh', e, logCh);
     }
     await refreshPath();
     return { ok: true };
@@ -321,12 +324,14 @@ ipcMain.handle('update-prereq', async (e, name) => {
       }
     } else {
       const brew = findBrewPath() || 'brew';
-      // Pre-authorize sudo so brew's internal escalation doesn't prompt
-      try { await run(`echo "${sudoPassword}" | sudo -S -v`); } catch (_) {}
       if (name === 'git')    await runStreaming(`"${brew}" upgrade git`, e, logCh);
-      if (name === 'node')   await runStreaming(`"${brew}" upgrade node@18`, e, logCh);
-      if (name === 'python') await runStreaming(`"${brew}" upgrade python@3.10`, e, logCh);
-      if (name === 'uv')     await runStreaming('uv self update', e, logCh);
+      else if (name === 'node')   await runStreaming(`"${brew}" upgrade node@18`, e, logCh);
+      else if (name === 'python') await runStreaming(`"${brew}" upgrade python@3.10`, e, logCh);
+      else if (name === 'uv') {
+        const uvPath = await findUvPath();
+        const uvCmd  = uvPath ? `"${uvPath}"` : 'uv';
+        await runStreaming(`${uvCmd} self update`, e, logCh);
+      }
     }
     await refreshPath();
     return { ok: true };

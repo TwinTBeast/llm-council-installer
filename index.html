@@ -219,7 +219,7 @@
     { id:'uv',     icon:'⚡', name:'uv (package manager)', desc:'Fast Python package manager for backend dependencies.' },
   ];
   const MAC_STEPS = [
-    { id:'homebrew', icon:'🍺', name:'Homebrew',             desc:'Mac package manager needed to install Git, Node.js and Python.\nYour password was verified — installation will run automatically.' },
+    { id:'homebrew', icon:'🍺', name:'Homebrew',             desc:'Mac package manager needed to install Git, Node.js and Python.\nClick Install — a Terminal window will open. Enter your Mac password when prompted.' },
     { id:'git',      icon:'🔧', name:'Git',                  desc:'Version control required to clone the repository.' },
     { id:'node',     icon:'🟩', name:'Node.js 18+',          desc:'JavaScript runtime required for the frontend.' },
     { id:'python',   icon:'🐍', name:'Python 3.10+',         desc:'Required to run the backend AI council server.' },
@@ -237,15 +237,10 @@
     document.getElementById(id).classList.add('active');
   }
 
-  // ── SUDO SCREEN ────────────────────────────────────────────────────────────
-  if (isMac) {
-    showScreen('screen-sudo');
-    setTimeout(() => document.getElementById('sudo-pwd').focus(), 300);
-  } else {
-    showScreen('screen-prereq');
-    buildSteps();
-    checkStepAt(0);
-  }
+  // ── Skip sudo screen — brew handles auth interactively in Terminal ──────────
+  showScreen('screen-prereq');
+  buildSteps();
+  checkStepAt(0);
 
   async function verifySudo() {
     const pwd = document.getElementById('sudo-pwd').value;
@@ -306,10 +301,16 @@
     const step = STEPS[idx];
     currentStepIdx = idx;
 
-    // Activate this step, lock all others
+    // Activate this step, preserve done for completed, lock future ones
     STEPS.forEach((s, i) => {
       const el = document.getElementById('step-' + s.id);
-      el.className = 'step ' + (i < idx ? 'done' : i === idx ? 'active' : 'locked');
+      if (i < idx) {
+        el.className = 'step done';  // preserve completed steps as green
+      } else if (i === idx) {
+        el.className = 'step active';
+      } else {
+        el.className = 'step locked';
+      }
     });
 
     setStatus(step.id, 'checking', '🔄', 'Checking...');
@@ -347,7 +348,7 @@
     ipcRenderer.removeListener(channel, unsub);
 
     // Short wait then re-check
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 2000));
     const check = await ipcRenderer.invoke('check-prereq', step.id);
 
     if (check.found && check.ok) {
@@ -355,10 +356,10 @@
       await checkStepAt(idx + 1);
     } else if (check.found) {
       setStatus(step.id, 'warn', '⚠️', `Still v${check.version} — try Retry`);
-      addBtn(step.id, 'Retry', 'btn-retry', () => runInstall(idx, 'update'));
+      addBtn(step.id, 'Retry', 'btn-retry', () => checkStepAt(idx));
     } else {
       setStatus(step.id, 'warn', '⚠️', 'Not detected yet — click Retry');
-      addBtn(step.id, 'Retry', 'btn-retry', () => runInstall(idx, 'install'));
+      addBtn(step.id, 'Retry', 'btn-retry', () => checkStepAt(idx));
     }
   }
 
