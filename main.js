@@ -233,29 +233,66 @@ ipcMain.handle('install-prereq', async (e, name) => {
     } else {
       const brew = findBrewPath() || 'brew';
       if (name === 'homebrew') {
-        // Step 1: Pre-authorize sudo silently using the stored password
-        // This refreshes the sudo timestamp so brew's internal sudo calls won't prompt
-        try { await run(`echo "${sudoPassword}" | sudo -S -v`); } catch (_) {}
+        // Homebrew needs a real TTY and cannot run via sudo -S or as root.
+        // Solution: use AppleScript to open a visible Terminal window that runs the installer.
+        // The user sees the Terminal, may need to enter password once there, then we auto-detect completion.
 
-        // Step 2: Run Homebrew installer as the CURRENT USER (not sudo)
-        // Homebrew explicitly refuses to run as root — it handles its own sudo calls internally
-        // NONINTERACTIVE=1 suppresses all prompts; sudo timestamp handles auth
-        const installCmd = `NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`;
-        await runStreaming(installCmd, e, logCh);
+        const doneFlag = path.join(os.tmpdir(), 'brew_install_done.flag');
+        const errFlag  = path.join(os.tmpdir(), 'brew_install_err.flag');
 
-        // Step 3: Add brew to shell profile and refresh PATH
+        // Clean up old flags
+        try { fs.unlinkSync(doneFlag); } catch (_) {}
+        try { fs.unlinkSync(errFlag);  } catch (_) {}
+
+        // Build the shell command that runs in Terminal
+        // It writes a flag file when done so we can detect completion
+        const brewInstallCmd = [
+          `export NONINTERACTIVE=1`,
+          `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`,
+          `if [ $? -eq 0 ]; then touch "${doneFlag}"; else touch "${errFlag}"; fi`,
+          // Add brew to zprofile
+          `if [ -f /usr/local/bin/brew ]; then echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.zprofile; fi`,
+          `if [ -f /opt/homebrew/bin/brew ]; then echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile; fi`,
+          `echo "==> Homebrew installation complete. You can close this window."`,
+        ].join(' && ');
+
+        // Open Terminal via AppleScript with the install command
+        const appleScript = `osascript -e 'tell application "Terminal" to activate' -e 'tell application "Terminal" to do script "${brewInstallCmd.replace(/"/g, '\\"').replace(/'/g, "'\\''")}"'`;
+
+        e.sender.send(logCh, 'Opening Terminal to install Homebrew...');
+        e.sender.send(logCh, 'A Terminal window will open — you may need to enter your password once.');
+        e.sender.send(logCh, 'The installer will auto-detect when Homebrew is ready...');
+
+        await run(appleScript);
+
+        // Poll every 3 seconds until done flag appears or brew is found (max 5 min)
+        const maxWait = 300000;
+        const interval = 3000;
+        let elapsed = 0;
+        await new Promise((resolve, reject) => {
+          const poll = setInterval(async () => {
+            elapsed += interval;
+            if (fs.existsSync(errFlag)) {
+              clearInterval(poll);
+              reject('Homebrew installation failed in Terminal.');
+            } else if (fs.existsSync(doneFlag) || findBrewPath()) {
+              clearInterval(poll);
+              e.sender.send(logCh, '✅ Homebrew detected — continuing...');
+              resolve();
+            } else if (elapsed >= maxWait) {
+              clearInterval(poll);
+              reject('Homebrew installation timed out after 5 minutes.');
+            } else {
+              e.sender.send(logCh, `⏳ Waiting for Homebrew... (${Math.round(elapsed/1000)}s)`);
+            }
+          }, interval);
+        });
+
+        // Refresh PATH after brew install
         await refreshPath();
         const newBrew = findBrewPath();
         if (newBrew) {
-          const profile = path.join(os.homedir(), '.zprofile');
-          const evalLine = `eval "$(${newBrew} shellenv)"`;
-          try {
-            const existing = fs.existsSync(profile) ? fs.readFileSync(profile, 'utf8') : '';
-            if (!existing.includes(evalLine)) {
-              fs.appendFileSync(profile, `\n${evalLine}\n`);
-            }
-          } catch (_) {}
-          try { await run(`eval "$(${newBrew} shellenv)"`); } catch (_) {}
+          try { await run(`"${newBrew}" shellenv`); } catch (_) {}
         }
       }
       // For brew installs — pre-authorize sudo then run brew as normal user
